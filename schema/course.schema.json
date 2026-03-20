@@ -1,5 +1,5 @@
 {
-  "$anchor": "spoor-course",
+  "$anchor": "g2aSpoor-course",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "$patch": {
@@ -8,9 +8,9 @@
     },
     "with": {
       "properties": {
-        "_spoor": {
+        "_g2aSpoor": {
           "type": "object",
-          "title": "Spoor (SCORM)",
+          "title": "G2A Spoor (SCORM)",
           "default": {},
           "properties": {
             "_messages": {

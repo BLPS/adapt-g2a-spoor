@@ -11,7 +11,7 @@
         "config": {
           "type": "object",
           "properties": {
-            "_spoor": {
+            "_g2aSpoor": {
               "type": "object",
               "required": false,
               "legend": "Spoor (SCORM)",
@@ -127,7 +127,7 @@
                     "_scormVersion": {
                       "type": "string",
                       "required": false,
-                      "default": "1.2",
+                      "default": "2004",
                       "title": "SCORM version",
                       "enum": ["1.2", "2004"],
                       "inputType": {
@@ -136,6 +136,28 @@
                       },
                       "validators": [],
                       "help": "What SCORM standard to use - SCORM 1.2 or SCORM 2004 4th Edition."
+                    },
+                    "_scoMode": {
+                      "type": "boolean",
+                      "required": false,
+                      "default": true,
+                      "title": "SCORM Multi-SCO",
+                      "inputType": "Checkbox",
+                      "validators": [],
+                      "help": "The SCOs are aggregated into four items that represent the different topics covered within the course"
+                    },
+                    "_scoSplitLevel": {
+                      "type": "string",
+                      "required": false,
+                      "default": 10,
+                      "title": "SCORM Multi-SCO Split Level",
+                      "enum": ["2004"],
+                      "inputType": {
+                        "type": "Select",
+                        "options": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+                      },
+                      "validators": [],
+                      "help": "How deep should split the course based on the menu level"
                     },
                     "_showDebugWindow": {
                       "type": "boolean",
@@ -354,10 +376,10 @@
         "course": {
           "type":"object",
           "properties": {
-            "_spoor": {
+            "_g2aSpoor": {
               "type": "object",
               "required": false,
-              "legend": "Spoor (SCORM)",
+              "legend": "G2A Spoor (SCORM)",
               "properties": {
                 "_messages": {
                   "type": "object",

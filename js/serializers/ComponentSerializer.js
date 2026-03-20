@@ -14,6 +14,7 @@ export default class ComponentSerializer extends Backbone.Controller {
       logging.warnOnce('SPOOR configuration error, cannot use \'_shouldStoreAttempts\' without \'_shouldStoreResponses\'');
     }
     const states = [];
+    const textStates = [];
     data.each(model => {
       if (model.get('_type') !== this.trackingIdType) {
         return;
@@ -94,14 +95,22 @@ export default class ComponentSerializer extends Backbone.Controller {
           [ hasUserAnswer, isUserAnswerArray, hasAttemptStates ],
           modelState
         ];
-        states.push(state);
+
+        if (component.serializeState === false) {
+          textStates.push(state);
+        } else {
+          states.push(state);
+        }
       });
     });
-    if (this.shouldCompress) return await SCORMSuspendData.serializeAsync(states);
-    return SCORMSuspendData.serialize(states);
+    if (this.shouldCompress) {
+      const response = await SCORMSuspendData.serializeAsync(states);
+      return response + '|' + JSON.stringify(textStates);
+    }
+    return SCORMSuspendData.serialize(states) + '|' + JSON.stringify(textStates);
   }
 
-  deserialize(binary) {
+  deserialize(rawBinary) {
     // Build a table of models and their tracking ids
     const trackingIdMap = data.toArray().reduce((trackingIdMap, model) => {
       const trackingId = model.get('_trackingId');
@@ -109,7 +118,18 @@ export default class ComponentSerializer extends Backbone.Controller {
       trackingIdMap[trackingId] = model;
       return trackingIdMap;
     }, {});
-    const states = SCORMSuspendData.deserialize(binary);
+
+    const separatorPos = rawBinary.indexOf('|');
+    let binary = null;
+    let textStates = [];
+    if (separatorPos !== -1) {
+      binary = rawBinary.substring(0, separatorPos);
+      textStates = JSON.parse(rawBinary.substring((separatorPos + 1)));
+    } else {
+      binary = rawBinary;
+    }
+
+    const states = SCORMSuspendData.deserialize(binary).concat(textStates);
     // Derive the storage settings of the data from the states array, this will allow changes
     // in the spoor configuration for _shouldStoreResponses and _shouldStoreAttempts
     // to be non-breaking

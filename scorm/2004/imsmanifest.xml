@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<manifest identifier="@@config._spoor._advancedSettings._manifestIdentifier" version="1" xmlns="http://www.imsglobal.org/xsd/imscp_v1p1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_v1p3" xmlns:adlseq="http://www.adlnet.org/xsd/adlseq_v1p3" xmlns:adlnav="http://www.adlnet.org/xsd/adlnav_v1p3" xmlns:imsss="http://www.imsglobal.org/xsd/imsss" xsi:schemaLocation="http://www.imsglobal.org/xsd/imscp_v1p1 imscp_v1p1.xsd
+<manifest identifier="@@config._g2aSpoor._advancedSettings._manifestIdentifier" version="1" xmlns="http://www.imsglobal.org/xsd/imscp_v1p1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_v1p3" xmlns:adlseq="http://www.adlnet.org/xsd/adlseq_v1p3" xmlns:adlnav="http://www.adlnet.org/xsd/adlnav_v1p3" xmlns:imsss="http://www.imsglobal.org/xsd/imsss" xsi:schemaLocation="http://www.imsglobal.org/xsd/imscp_v1p1 imscp_v1p1.xsd
 				http://www.adlnet.org/xsd/adlcp_v1p3 adlcp_v1p3.xsd
                 http://www.adlnet.org/xsd/adlseq_v1p3 adlseq_v1p3.xsd
                 http://www.adlnet.org/xsd/adlnav_v1p3 adlnav_v1p3.xsd
@@ -14,6 +14,9 @@
             <item identifier="I_A001" identifierref="A001">
                 <title><![CDATA[@@course.title]]></title>
                 <imsss:sequencing>
+                    <imsss:objectives>
+                        <imsss:primaryObjective satisfiedByMeasure="false" objectiveID="Results" />
+                    </imsss:objectives>
                     <imsss:deliveryControls completionSetByContent="true" objectiveSetByContent="true" />
                 </imsss:sequencing>
                 <adlnav:presentation>

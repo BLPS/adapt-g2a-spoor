@@ -42,7 +42,7 @@ export default class StatefulSession extends Backbone.Controller {
     if (window.location.search.indexOf('nolmserrors') !== -1) {
       this.scorm.suppressErrors = true;
     }
-    const config = Adapt.spoor.config;
+    const config = Adapt.g2aSpoor.config;
     if (!config) return;
     const tracking = config._tracking;
     this._shouldStoreResponses = (tracking && tracking._shouldStoreResponses) || false;
@@ -120,7 +120,7 @@ export default class StatefulSession extends Backbone.Controller {
       'questionView:recordInteraction': this.onQuestionRecordInteraction,
       'tracking:complete': this.onTrackingComplete
     });
-    const config = Adapt.spoor.config;
+    const config = Adapt.g2aSpoor.config;
     const advancedSettings = config._advancedSettings;
     const shouldCommitOnVisibilityChange = (!advancedSettings ||
         advancedSettings._commitOnVisibilityChangeHidden !== false);
@@ -161,7 +161,23 @@ export default class StatefulSession extends Backbone.Controller {
       logging.info(`course._isComplete: ${courseComplete}, course._isAssessmentPassed: ${assessmentPassed}, ${this._trackingIdType} completion: no tracking ids found`);
       return;
     }
-    const completionData = SCORMSuspendData.deserialize(suspendData.q);
+
+    const separatorPos = suspendData.q.indexOf('|');
+    let binary = null;
+    let textCompletionData = [];
+    if (separatorPos !== -1) {
+      binary = suspendData.q.substring(0, separatorPos);
+      textCompletionData = JSON.parse(suspendData.q.substring((separatorPos + 1)));
+    } else {
+      binary = suspendData.q;
+    }
+
+    const completionData = SCORMSuspendData.deserialize(binary).concat(textCompletionData);
+
+    if (!completionData.length) {
+        return;
+    }
+
     const max = Math.max(...completionData.map(item => item[0][0]));
     const shouldStoreResponses = (completionData[0].length === 3);
     const completionString = completionData.reduce((markers, item) => {
@@ -209,7 +225,7 @@ export default class StatefulSession extends Backbone.Controller {
 
   onLanguageChanged() {
     this.stopListening(Adapt.contentObjects, 'change:_isComplete', this.onContentObjectCompleteChange);
-    const config = Adapt.spoor.config;
+    const config = Adapt.g2aSpoor.config;
     if (config?._reporting?._resetStatusOnLanguageChange !== true) return;
     const completionStatus = COMPLETION_STATE.INCOMPLETE.asLowerCase;
     offlineStorage.set('status', completionStatus);
@@ -243,7 +259,7 @@ export default class StatefulSession extends Backbone.Controller {
   }
 
   onTrackingComplete(completionData) {
-    const config = Adapt.spoor.config;
+    const config = Adapt.g2aSpoor.config;
     this.saveSessionState();
     let completionStatus = completionData.status.asLowerCase;
     // The config allows the user to override the completion state.

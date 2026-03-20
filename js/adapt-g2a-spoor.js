@@ -7,7 +7,7 @@ import { shouldStart as shouldStartCookieLMS, start as startCookieLMS } from './
 import 'libraries/jquery.keycombo';
 import './fixes/harden';
 
-class Spoor extends Backbone.Controller {
+class G2aSpoor extends Backbone.Controller {
 
   initialize() {
     this.config = null;
@@ -17,7 +17,7 @@ class Spoor extends Backbone.Controller {
   }
 
   _prepare() {
-    this.config = Adapt.config.get('_spoor');
+    this.config = Adapt.config.get('_g2aSpoor');
     if (!this.isEnabled) {
       offlineStorage.setReadyStatus();
       return;
@@ -32,7 +32,7 @@ class Spoor extends Backbone.Controller {
 
     // setup debug window keyboard shortcut
     $.onKeyCombo([68, 69, 86], () => {
-      Adapt.spoor.scorm.showDebugWindow();
+      Adapt.g2aSpoor.scorm.showDebugWindow();
     });
   }
 
@@ -42,6 +42,6 @@ class Spoor extends Backbone.Controller {
 
 }
 
-Adapt.spoor = new Spoor();
+Adapt.g2aSpoor = new G2aSpoor();
 
-export default Adapt.spoor;
+export default Adapt.g2aSpoor;

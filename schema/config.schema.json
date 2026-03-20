@@ -1,5 +1,5 @@
 {
-  "$anchor": "spoor-config",
+  "$anchor": "g2aSpoor-config",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "$patch": {
@@ -8,9 +8,9 @@
     },
     "with": {
       "properties": {
-        "_spoor": {
+        "_g2aSpoor": {
           "type": "object",
-          "title": "Spoor (SCORM)",
+          "title": "G2A Spoor (SCORM)",
           "default": {},
           "properties": {
             "_isEnabled": {
@@ -106,7 +106,7 @@
                   "type": "string",
                   "title": "SCORM version",
                   "description": "The SCORM standard to use - SCORM 1.2 or SCORM 2004 4th Edition",
-                  "default": "1.2",
+                  "default": "2004",
                   "enum": ["1.2", "2004"],
                   "_backboneForms": "Select"
                 },

@@ -12,67 +12,67 @@ import {
 import _ from 'lodash';
 
 function getSpoorConfig() {
-  return getConfig()?._spoor;
+  return getConfig()?._g2aSpoor;
 }
 
 /**
  * removal was missed from legacy schema in v4.1.1 and applied in v5.0.0
  */
-describe('adapt-contrib-spoor - to v4.1.1', async () => {
+describe('adapt-g2a-spoor - to v4.1.1', async () => {
   let config, spoorConfig;
   const oldShouldSubmitScorePath = '_tracking._shouldSubmitScore';
   const shouldSubmitScorePath = '_completionCriteria._shouldSubmitScore';
-  whereFromPlugin('adapt-contrib-spoor - from <v4.1.1', { name: 'adapt-contrib-spoor', version: '<4.1.1' });
+  whereFromPlugin('adapt-g2a-spoor - from <v4.1.1', { name: 'adapt-g2a-spoor', version: '<4.1.1' });
 
-  whereContent('adapt-contrib-spoor - where _spoor', async () => {
+  whereContent('adapt-g2a-spoor - where _g2aSpoor', async () => {
     config = getConfig();
     spoorConfig = getSpoorConfig();
     return spoorConfig;
   });
 
-  mutateContent('adapt-contrib-spoor - replace _spoor._tracking._shouldSubmitScore with _completionCriteria._shouldSubmitScore', async () => {
+  mutateContent('adapt-g2a-spoor - replace _g2aSpoor._tracking._shouldSubmitScore with _completionCriteria._shouldSubmitScore', async () => {
     if (!_.has(config, shouldSubmitScorePath)) _.set(config, shouldSubmitScorePath, _.get(spoorConfig, oldShouldSubmitScorePath, false));
     _.unset(spoorConfig, oldShouldSubmitScorePath);
     return true;
   });
 
-  checkContent('adapt-contrib-spoor - check _spoor._tracking._shouldSubmitScore replaced', async () => {
+  checkContent('adapt-g2a-spoor - check _g2aSpoor._tracking._shouldSubmitScore replaced', async () => {
     const isValid = !_.has(spoorConfig, oldShouldSubmitScorePath) && _.has(config, shouldSubmitScorePath);
-    if (!isValid) throw new Error(`_spoor.${oldShouldSubmitScorePath} not replaced`);
+    if (!isValid) throw new Error(`_g2aSpoor.${oldShouldSubmitScorePath} not replaced`);
     return true;
   });
 
-  updatePlugin('adapt-contrib-spoor - update to v4.1.1', { name: 'adapt-contrib-spoor', version: '4.1.1', framework: '>=5.17.8' });
+  updatePlugin('adapt-g2a-spoor - update to v4.1.1', { name: 'adapt-g2a-spoor', version: '4.1.1', framework: '>=5.17.8' });
 
   testSuccessWhere('config with empty spoor', {
-    fromPlugins: [{ name: 'adapt-contrib-spoor', version: '4.1.0' }],
+    fromPlugins: [{ name: 'adapt-g2a-spoor', version: '4.1.0' }],
     content: [
-      { _type: 'config', _spoor: {} }
+      { _type: 'config', _g2aSpoor: {} }
     ]
   });
 
-  testSuccessWhere('config with default spoor._tracking', {
-    fromPlugins: [{ name: 'adapt-contrib-spoor', version: '4.1.0' }],
+  testSuccessWhere('config with default g2aSpoor._tracking', {
+    fromPlugins: [{ name: 'adapt-g2a-spoor', version: '4.1.0' }],
     content: [
-      { _type: 'config', _spoor: { _tracking: { _shouldSubmitScore: true } } }
+      { _type: 'config', _g2aSpoor: { _tracking: { _shouldSubmitScore: true } } }
     ]
   });
 
-  testSuccessWhere('config with empty spoor._tracking', {
-    fromPlugins: [{ name: 'adapt-contrib-spoor', version: '4.1.0' }],
+  testSuccessWhere('config with empty g2aSpoor._tracking', {
+    fromPlugins: [{ name: 'adapt-g2a-spoor', version: '4.1.0' }],
     content: [
-      { _type: 'config', _spoor: { _tracking: {} } }
+      { _type: 'config', _g2aSpoor: { _tracking: {} } }
     ]
   });
 
   testStopWhere('no spoor', {
-    fromPlugins: [{ name: 'adapt-contrib-spoor', version: '4.1.0' }],
+    fromPlugins: [{ name: 'adapt-g2a-spoor', version: '4.1.0' }],
     content: [
       { _type: 'config' }
     ]
   });
 
   testStopWhere('spoor incorrect version', {
-    fromPlugins: [{ name: 'adapt-contrib-spoor', version: '4.1.1' }]
+    fromPlugins: [{ name: 'adapt-g2a-spoor', version: '4.1.1' }]
   });
 });

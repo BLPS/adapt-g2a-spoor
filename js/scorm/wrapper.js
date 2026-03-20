@@ -299,7 +299,7 @@ class ScormWrapper {
       this.lastCommitSuccessTime = new Date();
       // if success, test the connection as the API usually returns true regardless of the ability to persist the data
       if (this._connection) this._connection.test();
-      Adapt.trigger('spoor:commit', this);
+      Adapt.trigger('g2aSpoor:commit', this);
       return;
     }
 
@@ -373,6 +373,9 @@ class ScormWrapper {
         break;
       case 'fill-in':
         this.recordInteractionFillIn(...arguments);
+        break;
+      case 'long-fill-in':
+        this.recordInteractionLongFillIn(...arguments);
         break;
       default:
         console.error(`ScormWrapper.recordInteraction: unknown interaction type of '${type}' encountered...`);
@@ -565,7 +568,7 @@ class ScormWrapper {
       // if the value being set is an empty string, ensure it displays in the error as ''
       if (error.data.value === '') error.data.value = '\'\'';
     }
-    const config = Adapt.course.get('_spoor');
+    const config = Adapt.course.get('_g2aSpoor');
     const messages = Object.assign({}, ScormError.defaultMessages, config && config._messages);
     const message = Handlebars.compile(messages[error.name])(error.data);
     this.logger.error(message);
@@ -698,6 +701,17 @@ class ScormWrapper {
     }
     const scormRecordInteraction = this.isSCORM2004() ? this.recordInteractionScorm2004 : this.recordInteractionScorm12;
     scormRecordInteraction.call(this, id, response, correct, latency, type, correctResponsesPattern, objectiveIds, description);
+  }
+
+  recordInteractionLongFillIn(id, response, correct, latency, type) {
+    let maxLength = this.isSCORM2004() ? 4000 : 255;
+    maxLength = this.maxCharLimitOverride ?? maxLength;
+    if (response.length > maxLength) {
+      response = response.substr(0, maxLength);
+      this.logger.warn(`ScormWrapper::recordInteractionLongFillIn: response data for ${id} is longer than the maximum allowed length of ${maxLength} characters; data will be truncated to avoid an error.`);
+    }
+    const scormRecordInteraction = this.isSCORM2004() ? this.recordInteractionScorm2004 : this.recordInteractionScorm12;
+    scormRecordInteraction.call(this, id, response, correct, latency, type);
   }
 
   getObjectiveCount() {

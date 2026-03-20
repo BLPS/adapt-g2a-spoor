@@ -1,19 +1,23 @@
 {
-  "name": "adapt-contrib-spoor",
+  "name": "adapt-g2a-spoor",
   "version": "5.14.3",
   "framework": ">=5.48.2",
-  "homepage": "https://github.com/adaptlearning/adapt-contrib-spoor",
-  "bugs": "https://github.com/adaptlearning/adapt-contrib-spoor/issues",
-  "extension": "spoor",
+  "extension": "g2aSpoor",
   "displayName": "Spoor",
   "description": "An extension which allows basic SCORM tracking",
-  "main": "/js/adapt-contrib-spoor.js",
+  "author": "The BLPS Group",
+  "homepage": "https://github.com/BLPS/adapt-g2a-spoor",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/BLPS/adapt-g2a-spoor.git"
+  },
+  "main": "/js/adapt-g2a-spoor.js",
   "keywords": [
     "adapt-plugin",
     "adapt-extension"
   ],
   "license": "GPL-3.0",
-  "targetAttribute": "_spoor",
+  "targetAttribute": "_g2aSpoor",
   "private": true,
   "devDependencies": {
     "@semantic-release/commit-analyzer": "^9.0.2",
