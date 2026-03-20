@@ -1,5 +1,5 @@
     // to be added to course/config.json
-    "_spoor": {
+    "_g2aSpoor": {
         "_isEnabled": true,
         "_tracking": {
             "_shouldSubmitScore": false,
@@ -42,7 +42,7 @@
     }
 
     // to be added to course/en/course.json (note: you only need to add the ones you want to change/translate)
-    "_spoor": {
+    "_g2aSpoor": {
         "_messages": {
             "title": "An error has occurred",
             "pressOk": "Press 'OK' to view detailed debug information to send to technical support.",
