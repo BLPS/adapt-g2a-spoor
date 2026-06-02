@@ -714,6 +714,14 @@ class ScormWrapper {
     scormRecordInteraction.call(this, id, response, correct, latency, type);
   }
 
+  /**
+   * Writes the aggregated course score to cmi.score and, for SCORM 2004,
+   * derives cmi.success_status by comparing the scaled score against
+   * cmi.scaled_passing_score.
+   * @param {number} score     Total raw score across all submitted components
+   * @param {number} minScore  Minimum possible score (default 0)
+   * @param {number} maxScore  Maximum possible score (default 0 = unscored course)
+   */
   recordCourseScore(score, minScore = 0, maxScore = 0) {
     this.setValue('cmi.score.raw', score);
     this.setValue('cmi.score.min', minScore);

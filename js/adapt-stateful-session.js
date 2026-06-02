@@ -166,7 +166,15 @@ export default class StatefulSession extends Backbone.Controller {
   }
 
   // ─── Objectives: per-component (component _id = objective id) ───────────────
+  //
+  // Each question component gets its own cmi.objectives entry keyed by its _id.
+  // This survives page navigation in multi-SCO setups because the LMS persists
+  // objectives by ID across sessions, not by array index.
 
+  /**
+   * Walks every content object and initialises a cmi.objectives entry for each
+   * question component found inside it. Called once at adapt:start.
+   */
   initializeContentObjectives() {
     if (!this.shouldRecordObjectives) return;
     Adapt.contentObjects.forEach(model => {
@@ -175,10 +183,19 @@ export default class StatefulSession extends Backbone.Controller {
     });
   }
 
+  /** @private Kicks off the recursive objective initialisation walk for one content object. */
   _initComponentsObjectives(model) {
     this._loopCourseObjectives(model, 'init');
   }
 
+  /**
+   * Recursively walks the model tree.
+   * Container nodes (course/page/article/block) are traversed; leaf components
+   * are handed to the appropriate handler based on `mode`.
+   * @private
+   * @param {Backbone.Model} model
+   * @param {'init'|'view'} mode  'init' = first-load setup, 'view' = re-apply on page view
+   */
   _loopCourseObjectives(model, mode) {
     if (typeof model.getChildren === 'undefined') return;
     const containerTypes = ['course', 'page', 'article', 'block'];
@@ -193,6 +210,12 @@ export default class StatefulSession extends Backbone.Controller {
     }
   }
 
+  /**
+   * Creates the cmi.objectives entry for a single question component.
+   * Skips non-question components (those without getResponseType).
+   * Already-visited components are not reset to 'not attempted'.
+   * @private
+   */
   _initComponentObjective(model) {
     if (typeof model.getResponseType === 'undefined') return;
     const id = model.get('_id');
@@ -209,12 +232,21 @@ export default class StatefulSession extends Backbone.Controller {
     this.initializeContentObjectives();
   }
 
-  // Fired when a page becomes visible — re-applies objective status for already-submitted components
+  /**
+   * Fired on pageView:ready. Re-applies objective status for components that
+   * were already submitted when this page was last viewed (e.g. resume session).
+   * @param {Backbone.View} view
+   */
   onPageViewReady(view) {
     if (!this.shouldRecordObjectives) return;
     this._loopCourseObjectives(view.model, 'view');
   }
 
+  /**
+   * Called for each leaf component when a page becomes visible.
+   * If the component was already submitted, immediately re-records its objective.
+   * @private
+   */
   _onComponentViewReady(model) {
     if (typeof model.getResponseType === 'undefined') return;
     const isFakeSubmit = typeof model.isFakeSubmit !== 'undefined' ? model.isFakeSubmit() : false;
@@ -223,7 +255,19 @@ export default class StatefulSession extends Backbone.Controller {
     }
   }
 
-  // Fired on change:_isSubmitted — writes objective status/score directly using component id
+  /**
+   * Primary objective-tracking hook. Fired whenever a question component's
+   * _isSubmitted flag changes. Writes the component's cmi.objectives entry
+   * directly (using the component _id as the objective id) and triggers a
+   * course-level score recalculation.
+   *
+   * Using the component _id (rather than a page/content-object id) ensures
+   * objective data survives multi-SCO page navigation because the LMS persists
+   * objectives by their id string across sessions.
+   *
+   * @param {Backbone.Model} model   The question component model
+   * @param {boolean} [isFakeSubmit] True for components that simulate submission
+   */
   onComponentsCompleteChange(model, isFakeSubmit) {
     if (typeof model.getResponseType === 'undefined') return;
     const id = model.get('_id');
@@ -237,6 +281,7 @@ export default class StatefulSession extends Backbone.Controller {
       successStatus = model.isCorrect?.() ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
       if (typeof model.isCorrect !== 'undefined') {
         model.markQuestion?.();
+        // Prefer direct model properties (standard Adapt API); fall back to Backbone attributes (G2A components)
         score.raw = model.score ?? model.get('_score') ?? 0;
         score.min = model.minScore ?? model.get('_minScore') ?? 0;
         score.max = model.maxScore ?? model.get('_maxScore') ?? 0;
@@ -250,12 +295,23 @@ export default class StatefulSession extends Backbone.Controller {
 
   // ─── Course score ─────────────────────────────────────────────────────────
 
+  /**
+   * Triggers a full course-score recalculation after a component is submitted.
+   * Uses _scoreLoopLockState to prevent double execution when both this method
+   * and the course change:_isComplete listener fire for the same action.
+   * @param {Backbone.Model} model  Any model in the course hierarchy
+   */
   updateCourseScore(model) {
     this._scoreLoopLockState = 2;
     const courseModel = this._getCourseModel(model);
     if (courseModel) this.onCourseCompleteChange(courseModel);
   }
 
+  /**
+   * Traverses parent chain to find the root course model.
+   * @private
+   * @returns {Backbone.Model|null}
+   */
   _getCourseModel(model) {
     if (typeof model.getParent === 'undefined') return null;
     const parent = model.getParent();
@@ -264,8 +320,17 @@ export default class StatefulSession extends Backbone.Controller {
     return this._getCourseModel(parent);
   }
 
+  /**
+   * Aggregates raw/min/max scores from all submitted question components and
+   * writes the total to cmi.score. Also derives cmi.success_status via
+   * recordCourseScore which compares against cmi.scaled_passing_score.
+   *
+   * The _scoreLoopLockState guard prevents double-execution: this method can be
+   * triggered both by updateCourseScore (after component submit) and by the
+   * course change:_isComplete listener registered in setupEventListeners.
+   * @param {Backbone.Model} model  The course model
+   */
   onCourseCompleteChange(model) {
-    // Prevent double execution when called from both onComponentsCompleteChange and course change:_isComplete
     if (this._scoreLoopLockState === 1) { this._scoreLoopLockState = 0; return; }
     if (this._scoreLoopLockState === 2) this._scoreLoopLockState = 1;
 
@@ -281,6 +346,11 @@ export default class StatefulSession extends Backbone.Controller {
     offlineStorage.set('courseScore', score.raw, score.min, score.max);
   }
 
+  /**
+   * Recursively collects score objects from every question component in the tree.
+   * @private
+   * @returns {Array<{raw:number,min:number,max:number}>|null}
+   */
   _loopCourseStructure(model) {
     if (typeof model.getChildren === 'undefined') return null;
     const containerTypes = ['course', 'page', 'article', 'block'];
@@ -297,6 +367,13 @@ export default class StatefulSession extends Backbone.Controller {
     return scores.length ? scores : null;
   }
 
+  /**
+   * Returns the score for one question component, or null for non-question components.
+   * Supports both the standard Adapt question API (model.score / model.maxScore)
+   * and G2A components that store scores as Backbone attributes (_score / _maxScore).
+   * @private
+   * @returns {{raw:number,min:number,max:number}|null}
+   */
   _getComponentScore(model) {
     if (typeof model.getResponseType === 'undefined') return null;
     const score = { raw: 0, min: 0, max: model.maxScore ?? model.get('_maxScore') ?? 0 };
