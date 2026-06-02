@@ -714,6 +714,26 @@ class ScormWrapper {
     scormRecordInteraction.call(this, id, response, correct, latency, type);
   }
 
+  recordCourseScore(score, minScore = 0, maxScore = 0) {
+    this.setValue('cmi.score.raw', score);
+    this.setValue('cmi.score.min', minScore);
+    this.setValue('cmi.score.max', maxScore);
+    if (this.isSCORM2004()) {
+      const range = (score < 0) ? Math.abs(minScore) : maxScore;
+      let scaledScore = range === 0 ? 0 : score / range;
+      if (isNaN(scaledScore)) scaledScore = 0;
+      this.setValue('cmi.score.scaled', parseFloat(scaledScore.toFixed(7)));
+      let successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase;
+      const scaledPassingScore = parseFloat(this.getValue('cmi.scaled_passing_score'));
+      if (!isNaN(scaledPassingScore)) {
+        successStatus = scaledScore >= scaledPassingScore
+          ? SUCCESS_STATE.PASSED.asLowerCase
+          : SUCCESS_STATE.FAILED.asLowerCase;
+      }
+      this.setValue('cmi.success_status', successStatus);
+    }
+  }
+
   getObjectiveCount() {
     const count = this.getValue('cmi.objectives._count');
     return count === '' ? 0 : count;

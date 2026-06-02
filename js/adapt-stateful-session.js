@@ -3,6 +3,7 @@ import data from 'core/js/data';
 import logging from 'core/js/logging';
 import ScormWrapper from './scorm/wrapper';
 import COMPLETION_STATE from 'core/js/enums/completionStateEnum';
+import SUCCESS_STATE from './enums/successStateEnum';
 import ComponentSerializer from './serializers/ComponentSerializer';
 import SCORMSuspendData from './serializers/SCORMSuspendData';
 import offlineStorage from 'core/js/offlineStorage';
@@ -21,6 +22,7 @@ export default class StatefulSession extends Backbone.Controller {
     this._shouldRecordInteractions = true;
     this._shouldRecordObjectives = true;
     this._uniqueInteractionIds = false;
+    this._scoreLoopLockState = 0;
     this.beginSession();
   }
 
@@ -38,7 +40,6 @@ export default class StatefulSession extends Backbone.Controller {
       'adapt:start': this.onAdaptStart
     });
     this._trackingIdType = Adapt.build.get('trackingIdType') || 'block';
-    // suppress SCORM errors if 'nolmserrors' is found in the querystring
     if (window.location.search.indexOf('nolmserrors') !== -1) {
       this.scorm.suppressErrors = true;
     }
@@ -49,8 +50,6 @@ export default class StatefulSession extends Backbone.Controller {
     this._shouldStoreAttempts = (tracking && tracking._shouldStoreAttempts) || false;
     this._shouldCompress = (tracking && tracking._shouldCompress) || false;
     this._componentSerializer = new ComponentSerializer(this._trackingIdType, this._shouldCompress);
-    // Default should be to record interactions, so only avoid doing that if
-    // _shouldRecordInteractions is set to false
     if (tracking?._shouldRecordInteractions === false) {
       this._shouldRecordInteractions = false;
     }
@@ -59,10 +58,6 @@ export default class StatefulSession extends Backbone.Controller {
     }
     const settings = config._advancedSettings;
     if (!settings) {
-      // force use of SCORM 1.2 by default - some LMSes (SABA/Kallidus for instance)
-      // present both APIs to the SCO and, if given the choice, the pipwerks
-      // code will automatically select the SCORM 2004 API - which can lead to
-      // unexpected behaviour.
       this.scorm.setVersion('1.2');
       this.scorm.initialize();
       return;
@@ -77,10 +72,6 @@ export default class StatefulSession extends Backbone.Controller {
   }
 
   setupLearnerInfo() {
-    // Replace the hard-coded _learnerInfo data in _globals with the actual data
-    // from the LMS
-    // If the course has been published from the AT, the _learnerInfo object
-    // won't exist so we'll need to create it
     const globals = Adapt.course.get('_globals');
     if (!globals._learnerInfo) {
       globals._learnerInfo = {};
@@ -94,10 +85,7 @@ export default class StatefulSession extends Backbone.Controller {
     if (hasNoPairs) return;
     if (sessionPairs.c) {
       const [ _isComplete, _isAssessmentPassed ] = SCORMSuspendData.deserialize(sessionPairs.c);
-      Adapt.course.set({
-        _isComplete,
-        _isAssessmentPassed
-      });
+      Adapt.course.set({ _isComplete, _isAssessmentPassed });
     }
     if (!sessionPairs.q) return;
     this._componentSerializer?.deserialize(sessionPairs.q);
@@ -106,10 +94,9 @@ export default class StatefulSession extends Backbone.Controller {
   setupEventListeners() {
     this.removeEventListeners();
     this.listenTo(Adapt.components, 'change:_isComplete', this.debouncedSaveSession);
-    this.listenTo(Adapt.contentObjects, {
-      'change:_isAvailable change:_isVisited change:_isComplete': this.setContentObjectiveStatus
-    });
+    this.listenTo(Adapt.components, 'change:_isSubmitted', this.onComponentsCompleteChange);
     this.listenTo(Adapt.course, 'change:_isComplete', this.debouncedSaveSession);
+    this.listenTo(Adapt.course, 'change:_isComplete', this.onCourseCompleteChange);
     if (this._shouldStoreResponses) {
       this.listenTo(data, 'change:_isSubmitted change:_userAnswer', this.debouncedSaveSession);
     }
@@ -117,6 +104,7 @@ export default class StatefulSession extends Backbone.Controller {
       'app:dataReady': this.restoreSession,
       'adapt:start': this.onAdaptStart,
       'app:languageChanged': this.onLanguageChanged,
+      'pageView:ready': this.onPageViewReady,
       'questionView:recordInteraction': this.onQuestionRecordInteraction,
       'tracking:complete': this.onTrackingComplete
     });
@@ -132,26 +120,19 @@ export default class StatefulSession extends Backbone.Controller {
 
   async saveSessionState() {
     const isMidRender = !Adapt.parentView?.model.get('_isReady');
-    // Wait until finished rendering to save
     if (isMidRender) return this.debouncedSaveSession();
     const courseState = SCORMSuspendData.serialize([
       Boolean(Adapt.course.get('_isComplete')),
       Boolean(Adapt.course.get('_isAssessmentPassed'))
     ]);
     const componentStates = await this._componentSerializer?.serialize(this._shouldStoreResponses, this._shouldStoreAttempts);
-    const sessionPairs = {
-      c: courseState,
-      q: componentStates
-    };
+    const sessionPairs = { c: courseState, q: componentStates };
     offlineStorage.set(sessionPairs);
     this.printCompletionInformation(sessionPairs);
   }
 
   printCompletionInformation(suspendData) {
-    if (typeof suspendData === 'string') {
-      // In-case LMS data is passed as a string
-      suspendData = JSON.parse(suspendData);
-    }
+    if (typeof suspendData === 'string') suspendData = JSON.parse(suspendData);
     const courseState = SCORMSuspendData.deserialize(suspendData.c);
     const courseComplete = courseState[0];
     const assessmentPassed = courseState[1];
@@ -161,7 +142,6 @@ export default class StatefulSession extends Backbone.Controller {
       logging.info(`course._isComplete: ${courseComplete}, course._isAssessmentPassed: ${assessmentPassed}, ${this._trackingIdType} completion: no tracking ids found`);
       return;
     }
-
     const separatorPos = suspendData.q.indexOf('|');
     let binary = null;
     let textCompletionData = [];
@@ -171,51 +151,57 @@ export default class StatefulSession extends Backbone.Controller {
     } else {
       binary = suspendData.q;
     }
-
     const completionData = SCORMSuspendData.deserialize(binary).concat(textCompletionData);
-
-    if (!completionData.length) {
-        return;
-    }
-
+    if (!completionData.length) return;
     const max = Math.max(...completionData.map(item => item[0][0]));
     const shouldStoreResponses = (completionData[0].length === 3);
     const completionString = completionData.reduce((markers, item) => {
       const trackingId = item[0][0];
-      const isComplete = shouldStoreResponses ?
-        item[2][1][0] :
-        item[1][0];
+      const isComplete = shouldStoreResponses ? item[2][1][0] : item[1][0];
       const mark = isComplete ? '1' : '0';
-      markers[trackingId] = (markers[trackingId] === '-' || markers[trackingId] === '1') ?
-        mark :
-        '0';
+      markers[trackingId] = (markers[trackingId] === '-' || markers[trackingId] === '1') ? mark : '0';
       return markers;
     }, new Array(max + 1).fill('-')).join('');
     logging.info(`course._isComplete: ${courseComplete}, course._isAssessmentPassed: ${assessmentPassed}, ${this._trackingIdType} completion: ${completionString}`);
   }
 
+  // ─── Objectives: per-component (component _id = objective id) ───────────────
+
   initializeContentObjectives() {
     if (!this.shouldRecordObjectives) return;
     Adapt.contentObjects.forEach(model => {
-      if (model.get('_recordObjective') === false || model.isTypeGroup('course') || model.get('_isVisited')) return;
-      const id = model.get('_id');
-      const description = model.get('title') || model.get('displayTitle');
-      offlineStorage.set('objectiveDescription', id, description);
-      this.setContentObjectiveStatus(model);
+      if (model.isTypeGroup('course')) return;
+      this._initComponentsObjectives(model);
     });
   }
 
-  setContentObjectiveStatus(model) {
-    if (!this.shouldRecordObjectives || model.get('_recordObjective') === false || model.isTypeGroup('course')) return;
+  _initComponentsObjectives(model) {
+    this._loopCourseObjectives(model, 'init');
+  }
+
+  _loopCourseObjectives(model, mode) {
+    if (typeof model.getChildren === 'undefined') return;
+    const containerTypes = ['course', 'page', 'article', 'block'];
+    const children = model.getChildren();
+    for (const child of children) {
+      if (containerTypes.includes(child.get('_type'))) {
+        this._loopCourseObjectives(child, mode);
+      } else {
+        if (mode === 'init') this._initComponentObjective(child);
+        else if (mode === 'view') this._onComponentViewReady(child);
+      }
+    }
+  }
+
+  _initComponentObjective(model) {
+    if (typeof model.getResponseType === 'undefined') return;
     const id = model.get('_id');
-    const isAvailable = model.get('_isAvailable');
-    const isVisited = model.get('_isVisited');
-    const isComplete = model.get('_isComplete');
-    let completionStatus = COMPLETION_STATE.UNKNOWN.asLowerCase;
-    if (isAvailable && !isVisited) completionStatus = COMPLETION_STATE.NOTATTEMPTED.asLowerCase;
-    if (isAvailable && isVisited && !isComplete) completionStatus = COMPLETION_STATE.INCOMPLETE.asLowerCase;
-    if (isAvailable && isComplete) completionStatus = COMPLETION_STATE.COMPLETED.asLowerCase;
-    offlineStorage.set('objectiveStatus', id, completionStatus);
+    const description = model.get('title') || model.get('displayTitle') || '';
+    offlineStorage.set('objectiveDescription', id, description);
+    if (model.get('_isVisited')) return;
+    offlineStorage.set('objectiveStatus', id,
+      COMPLETION_STATE.NOTATTEMPTED.asLowerCase,
+      SUCCESS_STATE.UNKNOWN.asLowerCase);
   }
 
   onAdaptStart() {
@@ -223,72 +209,154 @@ export default class StatefulSession extends Backbone.Controller {
     this.initializeContentObjectives();
   }
 
+  // Fired when a page becomes visible — re-applies objective status for already-submitted components
+  onPageViewReady(view) {
+    if (!this.shouldRecordObjectives) return;
+    this._loopCourseObjectives(view.model, 'view');
+  }
+
+  _onComponentViewReady(model) {
+    if (typeof model.getResponseType === 'undefined') return;
+    const isFakeSubmit = typeof model.isFakeSubmit !== 'undefined' ? model.isFakeSubmit() : false;
+    if (model.get('_isSubmitted') || isFakeSubmit) {
+      this.onComponentsCompleteChange(model, isFakeSubmit);
+    }
+  }
+
+  // Fired on change:_isSubmitted — writes objective status/score directly using component id
+  onComponentsCompleteChange(model, isFakeSubmit) {
+    if (typeof model.getResponseType === 'undefined') return;
+    const id = model.get('_id');
+    const completionStatus = (model.get('_isSubmitted') || isFakeSubmit)
+      ? COMPLETION_STATE.COMPLETED.asLowerCase
+      : COMPLETION_STATE.INCOMPLETE.asLowerCase;
+    const score = { raw: 0, min: 0, max: 0 };
+    let successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase;
+
+    if (model.get('_isSubmitted') || isFakeSubmit) {
+      successStatus = model.isCorrect?.() ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
+      if (typeof model.isCorrect !== 'undefined') {
+        model.markQuestion?.();
+        score.raw = model.score ?? model.get('_score') ?? 0;
+        score.min = model.minScore ?? model.get('_minScore') ?? 0;
+        score.max = model.maxScore ?? model.get('_maxScore') ?? 0;
+      }
+    }
+
+    offlineStorage.set('objectiveStatus', id, completionStatus, successStatus);
+    offlineStorage.set('objectiveScore', id, score.raw, score.min, score.max, false);
+    this.updateCourseScore(model);
+  }
+
+  // ─── Course score ─────────────────────────────────────────────────────────
+
+  updateCourseScore(model) {
+    this._scoreLoopLockState = 2;
+    const courseModel = this._getCourseModel(model);
+    if (courseModel) this.onCourseCompleteChange(courseModel);
+  }
+
+  _getCourseModel(model) {
+    if (typeof model.getParent === 'undefined') return null;
+    const parent = model.getParent();
+    if (!parent) return null;
+    if (parent.get('_type') === 'course') return parent;
+    return this._getCourseModel(parent);
+  }
+
+  onCourseCompleteChange(model) {
+    // Prevent double execution when called from both onComponentsCompleteChange and course change:_isComplete
+    if (this._scoreLoopLockState === 1) { this._scoreLoopLockState = 0; return; }
+    if (this._scoreLoopLockState === 2) this._scoreLoopLockState = 1;
+
+    const score = { raw: 0, min: 0, max: 0 };
+    const componentScores = this._loopCourseStructure(model);
+    if (componentScores?.length) {
+      for (const cs of componentScores) {
+        score.raw += cs.raw;
+        score.min += cs.min;
+        score.max += cs.max;
+      }
+    }
+    offlineStorage.set('courseScore', score.raw, score.min, score.max);
+  }
+
+  _loopCourseStructure(model) {
+    if (typeof model.getChildren === 'undefined') return null;
+    const containerTypes = ['course', 'page', 'article', 'block'];
+    let scores = [];
+    for (const child of model.getChildren()) {
+      if (containerTypes.includes(child.get('_type'))) {
+        const childScores = this._loopCourseStructure(child);
+        if (childScores?.length) scores = scores.concat(childScores);
+      } else {
+        const cs = this._getComponentScore(child);
+        if (cs) scores.push(cs);
+      }
+    }
+    return scores.length ? scores : null;
+  }
+
+  _getComponentScore(model) {
+    if (typeof model.getResponseType === 'undefined') return null;
+    const score = { raw: 0, min: 0, max: model.maxScore ?? model.get('_maxScore') ?? 0 };
+    if (typeof model.isCorrect !== 'undefined') {
+      model.markQuestion?.();
+      score.raw = model.score ?? model.get('_score') ?? 0;
+      score.min = model.minScore ?? model.get('_minScore') ?? 0;
+    }
+    return score;
+  }
+
+  // ─── Interactions ────────────────────────────────────────────────────────
+
+  onQuestionRecordInteraction(questionView) {
+    if (!this.shouldRecordInteractions) return;
+    if (!this.scorm.isSupported('cmi.interactions._count')) return;
+    const model = questionView.model;
+    const responseType = model.getResponseType?.() ?? questionView.getResponseType?.();
+    if (_.isEmpty(responseType)) return;
+    const id = this._uniqueInteractionIds
+      ? `${this.scorm.getInteractionCount()}-${model.get('_id')}`
+      : model.get('_id');
+    const response = model.getResponse?.() ?? questionView.getResponse?.();
+    const result = model.isCorrect?.() ?? questionView.isCorrect?.();
+    const latency = model.getLatency?.() ?? questionView.getLatency?.();
+    offlineStorage.set('interaction', id, response, result, latency, responseType);
+  }
+
+  // ─── Standard session lifecycle ──────────────────────────────────────────
+
   onLanguageChanged() {
-    this.stopListening(Adapt.contentObjects, 'change:_isComplete', this.onContentObjectCompleteChange);
+    this.stopListening(Adapt.components, 'change:_isSubmitted', this.onComponentsCompleteChange);
+    this.stopListening(Adapt.course, 'change:_isComplete', this.onCourseCompleteChange);
     const config = Adapt.g2aSpoor.config;
     if (config?._reporting?._resetStatusOnLanguageChange !== true) return;
-    const completionStatus = COMPLETION_STATE.INCOMPLETE.asLowerCase;
-    offlineStorage.set('status', completionStatus);
+    offlineStorage.set('status', COMPLETION_STATE.INCOMPLETE.asLowerCase);
   }
 
   onVisibilityChange() {
     if (document.visibilityState === 'hidden') this.scorm.commit();
   }
 
-  onQuestionRecordInteraction(view) {
-    if (!this.shouldRecordInteractions) return;
-    if (!this.scorm.isSupported('cmi.interactions._count')) return;
-    const model = view.model;
-    const responseType = model.getResponseType();
-    // If responseType doesn't contain any data, assume that the question
-    // component hasn't been set up for cmi.interaction tracking
-    if (_.isEmpty(responseType)) return;
-    const modelId = model.get('_id');
-    const id = this._uniqueInteractionIds
-      ? `${this.scorm.getInteractionCount()}-${modelId}`
-      : modelId;
-    const response = model.getResponse();
-    const result = model.isCorrect();
-    const latency = model?.getLatency?.() ?? view.getLatency();
-    const correctResponsesPattern = model.getInteractionObject()?.correctResponsesPattern;
-    const objectiveIds = model.contextActivities
-      .filter(activity => activity.type !== 'course')
-      .map(activity => activity.id);
-    const description = model.get('body');
-    offlineStorage.set('interaction', id, response, result, latency, responseType, correctResponsesPattern, objectiveIds, description);
-  }
-
   onTrackingComplete(completionData) {
     const config = Adapt.g2aSpoor.config;
     this.saveSessionState();
     let completionStatus = completionData.status.asLowerCase;
-    // The config allows the user to override the completion state.
     switch (completionData.status) {
       case COMPLETION_STATE.COMPLETED:
-      case COMPLETION_STATE.PASSED: {
-        if (!config?._reporting?._onTrackingCriteriaMet) {
-          logging.warn(`No value defined for '_onTrackingCriteriaMet', so defaulting to '${completionStatus}'`);
-        } else {
-          completionStatus = config._reporting._onTrackingCriteriaMet;
-        }
-
+      case COMPLETION_STATE.PASSED:
+        completionStatus = config?._reporting?._onTrackingCriteriaMet ?? completionStatus;
         break;
-      }
-      case COMPLETION_STATE.FAILED: {
-        if (!config?._reporting?._onAssessmentFailure) {
-          logging.warn(`No value defined for '_onAssessmentFailure', so defaulting to '${completionStatus}'`);
-        } else {
-          completionStatus = config._reporting._onAssessmentFailure;
-        }
-      }
+      case COMPLETION_STATE.FAILED:
+        completionStatus = config?._reporting?._onAssessmentFailure ?? completionStatus;
+        break;
     }
     offlineStorage.set('status', completionStatus);
   }
 
   endSession() {
-    if (!this.scorm.finishCalled) {
-      this.scorm.finish();
-    }
+    if (!this.scorm.finishCalled) this.scorm.finish();
     this.removeEventListeners();
   }
 
