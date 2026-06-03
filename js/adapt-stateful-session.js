@@ -69,7 +69,7 @@ export default class StatefulSession extends Backbone.Controller {
       this.scorm.initialize();
       return;
     }
-    this._uniqueInteractionIds = this.scorm.isSCORM2004() ? true : (settings._uniqueInteractionIds || false);
+    this._uniqueInteractionIds = settings._scormVersion === '2004' ? true : (settings._uniqueInteractionIds || false);
     this.scorm.initialize(settings);
   }
 
