@@ -40,6 +40,7 @@ export default class StatefulSession extends Backbone.Controller {
       'adapt:start': this.onAdaptStart
     });
     this._trackingIdType = Adapt.build.get('trackingIdType') || 'block';
+    // suppress SCORM errors if 'nolmserrors' is found in the querystring
     if (window.location.search.indexOf('nolmserrors') !== -1) {
       this.scorm.suppressErrors = true;
     }
@@ -50,6 +51,8 @@ export default class StatefulSession extends Backbone.Controller {
     this._shouldStoreAttempts = (tracking && tracking._shouldStoreAttempts) || false;
     this._shouldCompress = (tracking && tracking._shouldCompress) || false;
     this._componentSerializer = new ComponentSerializer(this._trackingIdType, this._shouldCompress);
+    // Default should be to record interactions, so only avoid doing that if
+    // _shouldRecordInteractions is set to false
     if (tracking?._shouldRecordInteractions === false) {
       this._shouldRecordInteractions = false;
     }
@@ -58,6 +61,10 @@ export default class StatefulSession extends Backbone.Controller {
     }
     const settings = config._advancedSettings;
     if (!settings) {
+      // force use of SCORM 1.2 by default - some LMSes (SABA/Kallidus for instance)
+      // present both APIs to the SCO and, if given the choice, the pipwerks
+      // code will automatically select the SCORM 2004 API - which can lead to
+      // unexpected behaviour.
       this.scorm.setVersion('1.2');
       this.scorm.initialize();
       return;
@@ -72,6 +79,10 @@ export default class StatefulSession extends Backbone.Controller {
   }
 
   setupLearnerInfo() {
+    // Replace the hard-coded _learnerInfo data in _globals with the actual data
+    // from the LMS
+    // If the course has been published from the AT, the _learnerInfo object
+    // won't exist so we'll need to create it
     const globals = Adapt.course.get('_globals');
     if (!globals._learnerInfo) {
       globals._learnerInfo = {};
@@ -85,7 +96,10 @@ export default class StatefulSession extends Backbone.Controller {
     if (hasNoPairs) return;
     if (sessionPairs.c) {
       const [ _isComplete, _isAssessmentPassed ] = SCORMSuspendData.deserialize(sessionPairs.c);
-      Adapt.course.set({ _isComplete, _isAssessmentPassed });
+      Adapt.course.set({
+        _isComplete,
+        _isAssessmentPassed
+      });
     }
     if (!sessionPairs.q) return;
     this._componentSerializer?.deserialize(sessionPairs.q);
@@ -94,7 +108,9 @@ export default class StatefulSession extends Backbone.Controller {
   setupEventListeners() {
     this.removeEventListeners();
     this.listenTo(Adapt.components, 'change:_isComplete', this.debouncedSaveSession);
+    // this.listenTo(Adapt.components, 'change:_isComplete', this.onComponentsCompleteChange);
     this.listenTo(Adapt.components, 'change:_isSubmitted', this.onComponentsCompleteChange);
+    // this.listenTo(Adapt.contentObjects, 'change:_isComplete', this.onContentObjectCompleteChange);
     this.listenTo(Adapt.course, 'change:_isComplete', this.debouncedSaveSession);
     this.listenTo(Adapt.course, 'change:_isComplete', this.onCourseCompleteChange);
     if (this._shouldStoreResponses) {
@@ -120,19 +136,27 @@ export default class StatefulSession extends Backbone.Controller {
 
   async saveSessionState() {
     const isMidRender = !Adapt.parentView?.model.get('_isReady');
+    // Wait until finished rendering to save
     if (isMidRender) return this.debouncedSaveSession();
     const courseState = SCORMSuspendData.serialize([
       Boolean(Adapt.course.get('_isComplete')),
       Boolean(Adapt.course.get('_isAssessmentPassed'))
     ]);
+
     const componentStates = await this._componentSerializer?.serialize(this._shouldStoreResponses, this._shouldStoreAttempts);
-    const sessionPairs = { c: courseState, q: componentStates };
+    const sessionPairs = {
+      c: courseState,
+      q: componentStates
+    };
     offlineStorage.set(sessionPairs);
     this.printCompletionInformation(sessionPairs);
   }
 
   printCompletionInformation(suspendData) {
-    if (typeof suspendData === 'string') suspendData = JSON.parse(suspendData);
+    if (typeof suspendData === 'string') {
+      // In-case LMS data is passed as a string
+      suspendData = JSON.parse(suspendData);
+    }
     const courseState = SCORMSuspendData.deserialize(suspendData.c);
     const courseComplete = courseState[0];
     const assessmentPassed = courseState[1];
@@ -142,6 +166,7 @@ export default class StatefulSession extends Backbone.Controller {
       logging.info(`course._isComplete: ${courseComplete}, course._isAssessmentPassed: ${assessmentPassed}, ${this._trackingIdType} completion: no tracking ids found`);
       return;
     }
+
     const separatorPos = suspendData.q.indexOf('|');
     let binary = null;
     let textCompletionData = [];
@@ -151,80 +176,75 @@ export default class StatefulSession extends Backbone.Controller {
     } else {
       binary = suspendData.q;
     }
+
     const completionData = SCORMSuspendData.deserialize(binary).concat(textCompletionData);
-    if (!completionData.length) return;
+
+    if (!completionData.length) {
+      return;
+    }
+
     const max = Math.max(...completionData.map(item => item[0][0]));
     const shouldStoreResponses = (completionData[0].length === 3);
     const completionString = completionData.reduce((markers, item) => {
       const trackingId = item[0][0];
-      const isComplete = shouldStoreResponses ? item[2][1][0] : item[1][0];
+      const isComplete = shouldStoreResponses ?
+        item[2][1][0] :
+        item[1][0];
       const mark = isComplete ? '1' : '0';
-      markers[trackingId] = (markers[trackingId] === '-' || markers[trackingId] === '1') ? mark : '0';
+      markers[trackingId] = (markers[trackingId] === '-' || markers[trackingId] === '1') ?
+        mark :
+        '0';
       return markers;
     }, new Array(max + 1).fill('-')).join('');
     logging.info(`course._isComplete: ${courseComplete}, course._isAssessmentPassed: ${assessmentPassed}, ${this._trackingIdType} completion: ${completionString}`);
   }
 
-  // ─── Objectives: per-component (component _id = objective id) ───────────────
-  //
-  // Each question component gets its own cmi.objectives entry keyed by its _id.
-  // This survives page navigation in multi-SCO setups because the LMS persists
-  // objectives by ID across sessions, not by array index.
-
-  /**
-   * Walks every content object and initialises a cmi.objectives entry for each
-   * question component found inside it. Called once at adapt:start.
-   */
   initializeContentObjectives() {
     if (!this.shouldRecordObjectives) return;
     Adapt.contentObjects.forEach(model => {
       if (model.isTypeGroup('course')) return;
-      this._initComponentsObjectives(model);
+      this.initializeComponentsObjectives(model);
+      // const id = model.get('_id');
+      // const description = model.get('title') || model.get('displayTitle');
+      // offlineStorage.set('objectiveDescription', id, description);
+      // if (model.get('_isVisited')) return;
+      // const completionStatus = COMPLETION_STATE.NOTATTEMPTED.asLowerCase;
+      // const successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase;
+      // offlineStorage.set('objectiveStatus', id, completionStatus, successStatus);
     });
   }
 
-  /** @private Kicks off the recursive objective initialisation walk for one content object. */
-  _initComponentsObjectives(model) {
-    this._loopCourseObjectives(model, 'init');
+  initializeComponentsObjectives(model) {
+    this.loopCourseObjectives(model, 'init');
   }
 
-  /**
-   * Recursively walks the model tree.
-   * Container nodes (course/page/article/block) are traversed; leaf components
-   * are handed to the appropriate handler based on `mode`.
-   * @private
-   * @param {Backbone.Model} model
-   * @param {'init'|'view'} mode  'init' = first-load setup, 'view' = re-apply on page view
-   */
-  _loopCourseObjectives(model, mode) {
-    if (typeof model.getChildren === 'undefined') return;
-    const containerTypes = ['course', 'page', 'article', 'block'];
+  loopCourseObjectives(model, mode) {
+    if (typeof model.getChildren === 'undefined') { return null; }
+    const loopElements = ['CourseModel', 'PageModel', 'ArticleModel', 'BlockModel'];
     const children = model.getChildren();
-    for (const child of children) {
-      if (containerTypes.includes(child.get('_type'))) {
-        this._loopCourseObjectives(child, mode);
+    for (const childModel of children) {
+      if (loopElements.includes(childModel.constructor.name)) {
+        this.loopCourseObjectives(childModel, mode);
       } else {
-        if (mode === 'init') this._initComponentObjective(child);
-        else if (mode === 'view') this._onComponentViewReady(child);
+        if (mode === 'init') {
+          this.initializeComponentObjective(childModel);
+        } else if (mode === 'view') {
+          this.onComponentViewReady(childModel);
+        }
       }
     }
   }
 
-  /**
-   * Creates the cmi.objectives entry for a single question component.
-   * Skips non-question components (those without getResponseType).
-   * Already-visited components are not reset to 'not attempted'.
-   * @private
-   */
-  _initComponentObjective(model) {
-    if (typeof model.getResponseType === 'undefined') return;
+  initializeComponentObjective(model) {
     const id = model.get('_id');
-    const description = model.get('title') || model.get('displayTitle') || '';
-    offlineStorage.set('objectiveDescription', id, description);
-    if (model.get('_isVisited')) return;
-    offlineStorage.set('objectiveStatus', id,
-      COMPLETION_STATE.NOTATTEMPTED.asLowerCase,
-      SUCCESS_STATE.UNKNOWN.asLowerCase);
+    const description = model.get('title') || model.get('displayTitle');
+    if (typeof model.getResponseType !== 'undefined') {
+      offlineStorage.set('objectiveDescription', id, description);
+      if (model.get('_isVisited')) return;
+      const completionStatus = COMPLETION_STATE.NOTATTEMPTED.asLowerCase;
+      const successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase;
+      offlineStorage.set('objectiveStatus', id, completionStatus, successStatus);
+    }
   }
 
   onAdaptStart() {
@@ -232,208 +252,276 @@ export default class StatefulSession extends Backbone.Controller {
     this.initializeContentObjectives();
   }
 
-  /**
-   * Fired on pageView:ready. Re-applies objective status for components that
-   * were already submitted when this page was last viewed (e.g. resume session).
-   * @param {Backbone.View} view
-   */
-  onPageViewReady(view) {
-    if (!this.shouldRecordObjectives) return;
-    this._loopCourseObjectives(view.model, 'view');
-  }
-
-  /**
-   * Called for each leaf component when a page becomes visible.
-   * If the component was already submitted, immediately re-records its objective.
-   * @private
-   */
-  _onComponentViewReady(model) {
-    if (typeof model.getResponseType === 'undefined') return;
-    const isFakeSubmit = typeof model.isFakeSubmit !== 'undefined' ? model.isFakeSubmit() : false;
-    if (model.get('_isSubmitted') || isFakeSubmit) {
-      this.onComponentsCompleteChange(model, isFakeSubmit);
-    }
-  }
-
-  /**
-   * Primary objective-tracking hook. Fired whenever a question component's
-   * _isSubmitted flag changes. Writes the component's cmi.objectives entry
-   * directly (using the component _id as the objective id) and triggers a
-   * course-level score recalculation.
-   *
-   * Using the component _id (rather than a page/content-object id) ensures
-   * objective data survives multi-SCO page navigation because the LMS persists
-   * objectives by their id string across sessions.
-   *
-   * @param {Backbone.Model} model   The question component model
-   * @param {boolean} [isFakeSubmit] True for components that simulate submission
-   */
-  onComponentsCompleteChange(model, isFakeSubmit) {
-    if (typeof model.getResponseType === 'undefined') return;
-    const id = model.get('_id');
-    const completionStatus = (model.get('_isSubmitted') || isFakeSubmit)
-      ? COMPLETION_STATE.COMPLETED.asLowerCase
-      : COMPLETION_STATE.INCOMPLETE.asLowerCase;
-    const score = { raw: 0, min: 0, max: 0 };
-    let successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase;
-
-    if (model.get('_isSubmitted') || isFakeSubmit) {
-      successStatus = model.isCorrect?.() ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
-      if (typeof model.isCorrect !== 'undefined') {
-        model.markQuestion?.();
-        // Prefer direct model properties (standard Adapt API); fall back to Backbone attributes (G2A components)
-        score.raw = model.score ?? model.get('_score') ?? 0;
-        score.min = model.minScore ?? model.get('_minScore') ?? 0;
-        score.max = model.maxScore ?? model.get('_maxScore') ?? 0;
-      }
-    }
-
-    offlineStorage.set('objectiveStatus', id, completionStatus, successStatus);
-    offlineStorage.set('objectiveScore', id, score.raw, score.min, score.max, false);
-    this.updateCourseScore(model);
-  }
-
-  // ─── Course score ─────────────────────────────────────────────────────────
-
-  /**
-   * Triggers a full course-score recalculation after a component is submitted.
-   * Uses _scoreLoopLockState to prevent double execution when both this method
-   * and the course change:_isComplete listener fire for the same action.
-   * @param {Backbone.Model} model  Any model in the course hierarchy
-   */
-  updateCourseScore(model) {
-    this._scoreLoopLockState = 2;
-    const courseModel = this._getCourseModel(model);
-    if (courseModel) this.onCourseCompleteChange(courseModel);
-  }
-
-  /**
-   * Traverses parent chain to find the root course model.
-   * @private
-   * @returns {Backbone.Model|null}
-   */
-  _getCourseModel(model) {
-    if (typeof model.getParent === 'undefined') return null;
-    const parent = model.getParent();
-    if (!parent) return null;
-    if (parent.get('_type') === 'course') return parent;
-    return this._getCourseModel(parent);
-  }
-
-  /**
-   * Aggregates raw/min/max scores from all submitted question components and
-   * writes the total to cmi.score. Also derives cmi.success_status via
-   * recordCourseScore which compares against cmi.scaled_passing_score.
-   *
-   * The _scoreLoopLockState guard prevents double-execution: this method can be
-   * triggered both by updateCourseScore (after component submit) and by the
-   * course change:_isComplete listener registered in setupEventListeners.
-   * @param {Backbone.Model} model  The course model
-   */
-  onCourseCompleteChange(model) {
-    if (this._scoreLoopLockState === 1) { this._scoreLoopLockState = 0; return; }
-    if (this._scoreLoopLockState === 2) this._scoreLoopLockState = 1;
-
-    const score = { raw: 0, min: 0, max: 0 };
-    const componentScores = this._loopCourseStructure(model);
-    if (componentScores?.length) {
-      for (const cs of componentScores) {
-        score.raw += cs.raw;
-        score.min += cs.min;
-        score.max += cs.max;
-      }
-    }
-    offlineStorage.set('courseScore', score.raw, score.min, score.max);
-  }
-
-  /**
-   * Recursively collects score objects from every question component in the tree.
-   * @private
-   * @returns {Array<{raw:number,min:number,max:number}>|null}
-   */
-  _loopCourseStructure(model) {
-    if (typeof model.getChildren === 'undefined') return null;
-    const containerTypes = ['course', 'page', 'article', 'block'];
-    let scores = [];
-    for (const child of model.getChildren()) {
-      if (containerTypes.includes(child.get('_type'))) {
-        const childScores = this._loopCourseStructure(child);
-        if (childScores?.length) scores = scores.concat(childScores);
-      } else {
-        const cs = this._getComponentScore(child);
-        if (cs) scores.push(cs);
-      }
-    }
-    return scores.length ? scores : null;
-  }
-
-  /**
-   * Returns the score for one question component, or null for non-question components.
-   * Supports both the standard Adapt question API (model.score / model.maxScore)
-   * and G2A components that store scores as Backbone attributes (_score / _maxScore).
-   * @private
-   * @returns {{raw:number,min:number,max:number}|null}
-   */
-  _getComponentScore(model) {
-    if (typeof model.getResponseType === 'undefined') return null;
-    const score = { raw: 0, min: 0, max: model.maxScore ?? model.get('_maxScore') ?? 0 };
-    if (typeof model.isCorrect !== 'undefined') {
-      model.markQuestion?.();
-      score.raw = model.score ?? model.get('_score') ?? 0;
-      score.min = model.minScore ?? model.get('_minScore') ?? 0;
-    }
-    return score;
-  }
-
-  // ─── Interactions ────────────────────────────────────────────────────────
-
-  onQuestionRecordInteraction(questionView) {
-    if (!this.shouldRecordInteractions) return;
-    if (!this.scorm.isSupported('cmi.interactions._count')) return;
-    const model = questionView.model;
-    const responseType = model.getResponseType?.() ?? questionView.getResponseType?.();
-    if (_.isEmpty(responseType)) return;
-    const id = this._uniqueInteractionIds
-      ? `${this.scorm.getInteractionCount()}-${model.get('_id')}`
-      : model.get('_id');
-    const response = model.getResponse?.() ?? questionView.getResponse?.();
-    const result = model.isCorrect?.() ?? questionView.isCorrect?.();
-    const latency = model.getLatency?.() ?? questionView.getLatency?.();
-    offlineStorage.set('interaction', id, response, result, latency, responseType);
-  }
-
-  // ─── Standard session lifecycle ──────────────────────────────────────────
-
   onLanguageChanged() {
+    // this.stopListening(Adapt.components, 'change:_isComplete', this.onComponentsCompleteChange);
     this.stopListening(Adapt.components, 'change:_isSubmitted', this.onComponentsCompleteChange);
+    // this.stopListening(Adapt.contentObjects, 'change:_isComplete', this.onContentObjectCompleteChange);
     this.stopListening(Adapt.course, 'change:_isComplete', this.onCourseCompleteChange);
     const config = Adapt.g2aSpoor.config;
     if (config?._reporting?._resetStatusOnLanguageChange !== true) return;
-    offlineStorage.set('status', COMPLETION_STATE.INCOMPLETE.asLowerCase);
+    const completionStatus = COMPLETION_STATE.INCOMPLETE.asLowerCase;
+    offlineStorage.set('status', completionStatus);
   }
 
   onVisibilityChange() {
     if (document.visibilityState === 'hidden') this.scorm.commit();
   }
 
+  onPageViewReady(view) {
+    if (!this.shouldRecordObjectives) return;
+    const model = view.model;
+    // if (model.get('_isComplete')) return;
+    // const id = model.get('_id');
+    // const completionStatus = COMPLETION_STATE.INCOMPLETE.asLowerCase;
+    // const successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase;
+    // offlineStorage.set('objectiveStatus', id, completionStatus, successStatus);
+    this.onComponentsViewReady(model);
+  }
+
+  onComponentsViewReady(model) {
+    this.loopCourseObjectives(model, 'view');
+  }
+
+  onComponentViewReady(model) {
+    // if (model.get('_isComplete')) return;
+    if (typeof model.getResponseType !== 'undefined') {
+      const isFakeSubmit = typeof model.isFakeSubmit !== 'undefined' ? model.isFakeSubmit() : false;
+      if (model.get('_isSubmitted') || isFakeSubmit) {
+        this.onComponentsCompleteChange(model, isFakeSubmit);
+      }
+    }
+  }
+
+  onQuestionRecordInteraction(questionView) {
+    if (!this.shouldRecordInteractions) return;
+    if (!this.scorm.isSupported('cmi.interactions._count')) return;
+    // View functions are deprecated: getResponseType, getResponse, isCorrect, getLatency
+    const questionModel = questionView.model;
+    const responseType = (questionModel.getResponseType ? questionModel.getResponseType() : questionView.getResponseType());
+    // If responseType doesn't contain any data, assume that the question
+    // component hasn't been set up for cmi.interaction tracking
+    if (_.isEmpty(responseType)) return;
+    const id = this._uniqueInteractionIds
+      ? `${this.scorm.getInteractionCount()}-${questionModel.get('_id')}`
+      : questionModel.get('_id');
+    const response = (questionModel.getResponse ? questionModel.getResponse() : questionView.getResponse());
+    const result = (questionModel.isCorrect ? questionModel.isCorrect() : questionView.isCorrect());
+    const latency = (questionModel.getLatency ? questionModel.getLatency() : questionView.getLatency());
+    offlineStorage.set('interaction', id, response, result, latency, responseType);
+  }
+
+  onContentObjectCompleteChange(model) {
+    // if (!this.shouldRecordObjectives) return;
+    // if (model.isTypeGroup('course')) return;
+    // const id = model.get('_id');
+    // const completionStatus = (model.get('_isComplete') ? COMPLETION_STATE.COMPLETED : COMPLETION_STATE.INCOMPLETE).asLowerCase;
+    // let successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase;
+    // let isCorrect = null;
+    //
+    // let score = {
+    //   max: 0,
+    //   min: 0,
+    //   raw: 0
+    // };
+    //
+    // const children = model.getChildren();
+    // for (const child of children) {
+    //   if (child.constructor.name === 'ArticleModel') {
+    //     const childrenA = child.getChildren();
+    //     for (const childA of childrenA) {
+    //       if (childA.constructor.name === 'BlockModel') {
+    //         const childrenB = childA.getChildren();
+    //         for (const childB of childrenB) {
+    //           if (childB.get('_isComplete') && typeof childB.isCorrect !== 'undefined') {
+    //             if (isCorrect === null) {
+    //               isCorrect = childB.isCorrect();
+    //             } else if (isCorrect === true && !childB.isCorrect()) {
+    //               isCorrect = childB.isCorrect();
+    //             }
+    //             if (typeof childB.markQuestion !== 'undefined') {
+    //               childB.markQuestion();
+    //             }
+    //             score.raw = score.raw + childB.score;
+    //             score.min = score.min + childB.minScore;
+    //             score.max = score.max + childB.maxScore;
+    //           }
+    //         }
+    //       }
+    //     }
+    //   }
+    // }
+    //
+    // if (isCorrect !== null && model.get('_isComplete')) {
+    //   successStatus = isCorrect ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
+    // }
+    // if (isCorrect === null) {
+    //   score = null;
+    // }
+    //
+    // offlineStorage.set('objectiveStatus', id, completionStatus, successStatus);
+    // if (score !== null) {
+    //   offlineStorage.set('objectiveScore', id, score.raw, score.min, score.max, false);
+    // } else {
+    //   offlineStorage.set('objectiveScore', id, 0, 0, 0, false);
+    // }
+  }
+
+  onComponentsCompleteChange(model, isFakeSubmit) {
+    const id = model.get('_id');
+    if (typeof model.getResponseType !== 'undefined') {
+      // const completionStatus = (model.get('_isComplete') ? COMPLETION_STATE.COMPLETED : COMPLETION_STATE.INCOMPLETE).asLowerCase;
+      const completionStatus = (model.get('_isSubmitted') || isFakeSubmit ? COMPLETION_STATE.COMPLETED : COMPLETION_STATE.INCOMPLETE).asLowerCase;
+      const score = {
+        max: 0,
+        min: 0,
+        raw: 0
+      };
+      let successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase;
+      // if (model.get('_isComplete')) {
+      if (model.get('_isSubmitted') || isFakeSubmit) {
+        successStatus = model.isCorrect() ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
+
+        if (typeof model.isCorrect !== 'undefined') {
+          if (typeof model.markQuestion !== 'undefined') {
+            model.markQuestion();
+          }
+          score.raw = model.score;
+          score.min = model.minScore;
+          score.max = model.maxScore;
+        }
+      }
+      offlineStorage.set('objectiveStatus', id, completionStatus, successStatus);
+      offlineStorage.set('objectiveScore', id, score.raw, score.min, score.max, false);
+      this.updateCourseScore(model);
+    }
+  }
+
+  updateCourseScore(model) {
+    this._scoreLoopLockState = 2;
+    const courseModel = this.getCourseModel(model);
+    if (!courseModel) return null;
+    this.onCourseCompleteChange(courseModel);
+  }
+
+  getCourseModel(model) {
+    if (typeof model.getParent === 'undefined') return null;
+    const parentModel = model.getParent();
+    if (!parentModel) return null;
+    if (parentModel.get('_type') === 'course') return parentModel;
+    return this.getCourseModel(parentModel);
+  }
+
+  onCourseCompleteChange(model) {
+
+    // prevent double onCourseCompleteChange execution from onComponentsCompleteChange and course change:_isComplete at the same time
+    if (this._scoreLoopLockState === 1) {
+      this._scoreLoopLockState = 0;
+      return;
+    }
+    if (this._scoreLoopLockState === 2) {
+      this._scoreLoopLockState = 1;
+    }
+
+    // _type = course
+    const score = {
+      max: 0,
+      min: 0,
+      raw: 0,
+      scaled: 0
+    };
+    // if (model.get('_isComplete')) {
+    const componentsScore = this.loopCourseStructure(model);
+    if (componentsScore !== null && componentsScore.length > 0) {
+      for (const componentScore of componentsScore) {
+        score.max = score.max + componentScore.max;
+        score.min = score.min + componentScore.min;
+        score.raw = score.raw + componentScore.raw;
+      }
+    }
+    // }
+
+    offlineStorage.set('courseScore', score.raw, score.min, score.max);
+  }
+
+  loopCourseStructure(model) {
+    if (typeof model.getChildren === 'undefined') { return null; }
+    // const loopElements = ['CourseModel', 'PageModel', 'ArticleModel', 'BlockModel'];
+    const loopElements = ['course', 'page', 'article', 'block'];
+    let score = [];
+    const children = model.getChildren();
+    for (const childModel of children) {
+      if (loopElements.includes(childModel.get('_type'))) {
+        const loopScore = this.loopCourseStructure(childModel);
+        if (loopScore !== null && loopScore.length > 0) {
+          score = score.concat(loopScore);
+        }
+      } else {
+        const componentScore = this.getComponentScore(childModel);
+        if (componentScore !== null) {
+          score.push(componentScore);
+        }
+      }
+    }
+    return score.length > 0 ? score : null;
+  }
+
+  getComponentScore(model) {
+    const score = {
+      max: 0,
+      min: 0,
+      raw: 0,
+      type: model.get('_type'),
+      id: model.get('_id'),
+      c: model.constructor.name
+    };
+
+    if (typeof model.getResponseType !== 'undefined') {
+      score.max = model.maxScore;
+      score.max = model.maxScore;
+
+      if (typeof model.isCorrect !== 'undefined') {
+        if (typeof model.markQuestion !== 'undefined') {
+          model.markQuestion();
+        }
+        score.raw = model.score;
+      }
+
+      return score;
+    }
+    return null;
+  }
+
   onTrackingComplete(completionData) {
     const config = Adapt.g2aSpoor.config;
     this.saveSessionState();
     let completionStatus = completionData.status.asLowerCase;
+    // The config allows the user to override the completion state.
     switch (completionData.status) {
       case COMPLETION_STATE.COMPLETED:
-      case COMPLETION_STATE.PASSED:
-        completionStatus = config?._reporting?._onTrackingCriteriaMet ?? completionStatus;
+      case COMPLETION_STATE.PASSED: {
+        if (!config?._reporting?._onTrackingCriteriaMet) {
+          logging.warn(`No value defined for '_onTrackingCriteriaMet', so defaulting to '${completionStatus}'`);
+        } else {
+          completionStatus = config._reporting._onTrackingCriteriaMet;
+        }
+
         break;
-      case COMPLETION_STATE.FAILED:
-        completionStatus = config?._reporting?._onAssessmentFailure ?? completionStatus;
-        break;
+      }
+      case COMPLETION_STATE.FAILED: {
+        if (!config?._reporting?._onAssessmentFailure) {
+          logging.warn(`No value defined for '_onAssessmentFailure', so defaulting to '${completionStatus}'`);
+        } else {
+          completionStatus = config._reporting._onAssessmentFailure;
+        }
+      }
     }
     offlineStorage.set('status', completionStatus);
   }
 
   endSession() {
-    if (!this.scorm.finishCalled) this.scorm.finish();
+    if (!this.scorm.finishCalled) {
+      this.scorm.finish();
+    }
     this.removeEventListeners();
   }
 

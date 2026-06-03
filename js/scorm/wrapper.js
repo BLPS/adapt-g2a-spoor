@@ -169,7 +169,6 @@ class ScormWrapper {
 
     this.startTime = new Date();
     this.initTimedCommit();
-    this.setExitState();
     return this.lmsConnected;
   }
 
@@ -181,33 +180,33 @@ class ScormWrapper {
   }
 
   setIncomplete() {
-    const options = { shouldCommit: this.commitOnStatusChange || this.commitOnAnyChange };
-    this.setValue(this.isSCORM2004() ? 'cmi.completion_status' : 'cmi.core.lesson_status', COMPLETION_STATE.INCOMPLETE.asLowerCase, options);
+    this.setValue(this.isSCORM2004() ? 'cmi.completion_status' : 'cmi.core.lesson_status', COMPLETION_STATE.INCOMPLETE.asLowerCase);
+    if (this.commitOnStatusChange && !this.commitOnAnyChange) this.commit();
   }
 
   setCompleted() {
-    const options = { shouldCommit: this.commitOnStatusChange || this.commitOnAnyChange };
-    this.setValue(this.isSCORM2004() ? 'cmi.completion_status' : 'cmi.core.lesson_status', COMPLETION_STATE.COMPLETED.asLowerCase, options);
+    this.setValue(this.isSCORM2004() ? 'cmi.completion_status' : 'cmi.core.lesson_status', COMPLETION_STATE.COMPLETED.asLowerCase);
+    if (this.commitOnStatusChange && !this.commitOnAnyChange) this.commit();
   }
 
   setPassed() {
-    const options = { shouldCommit: this.commitOnStatusChange || this.commitOnAnyChange };
     if (this.isSCORM2004()) {
-      this.setValue('cmi.completion_status', COMPLETION_STATE.COMPLETED.asLowerCase, options);
-      this.setValue('cmi.success_status', SUCCESS_STATE.PASSED.asLowerCase, options);
-      return;
+      this.setValue('cmi.completion_status', COMPLETION_STATE.COMPLETED.asLowerCase);
+      this.setValue('cmi.success_status', SUCCESS_STATE.PASSED.asLowerCase);
+    } else {
+      this.setValue('cmi.core.lesson_status', SUCCESS_STATE.PASSED.asLowerCase);
     }
-    this.setValue('cmi.core.lesson_status', SUCCESS_STATE.PASSED.asLowerCase, options);
+    if (this.commitOnStatusChange && !this.commitOnAnyChange) this.commit();
   }
 
   setFailed() {
-    const options = { shouldCommit: this.commitOnStatusChange || this.commitOnAnyChange };
     if (this.isSCORM2004()) {
-      this.setValue('cmi.success_status', SUCCESS_STATE.FAILED.asLowerCase, options);
-      if (this.setCompletedWhenFailed) this.setValue('cmi.completion_status', COMPLETION_STATE.COMPLETED.asLowerCase, options);
-      return;
+      this.setValue('cmi.success_status', SUCCESS_STATE.FAILED.asLowerCase);
+      if (this.setCompletedWhenFailed) this.setValue('cmi.completion_status', COMPLETION_STATE.COMPLETED.asLowerCase);
+    } else {
+      this.setValue('cmi.core.lesson_status', SUCCESS_STATE.FAILED.asLowerCase);
     }
-    this.setValue('cmi.core.lesson_status', SUCCESS_STATE.FAILED.asLowerCase, options);
+    if (this.commitOnStatusChange && !this.commitOnAnyChange) this.commit();
   }
 
   getStatus() {
@@ -246,12 +245,13 @@ class ScormWrapper {
   }
 
   getLessonLocation() {
-    const location = this.getValue(this.isSCORM2004() ? 'cmi.location' : 'cmi.core.lesson_location');
-    return location === 'null' ? '' : location;
+    return this.getValue(this.isSCORM2004() ? 'cmi.location' : 'cmi.core.lesson_location');
   }
 
   setLessonLocation(location) {
-    if (!location?.trim()) location = 'null';
+    if (!location || location.trim() === '') {
+      location = 'course';
+    }
     this.setValue(this.isSCORM2004() ? 'cmi.location' : 'cmi.core.lesson_location', location);
   }
 
@@ -292,8 +292,6 @@ class ScormWrapper {
       return;
     }
 
-    this.setSessionTime();
-
     if (this.scorm.save()) {
       this.commitRetries = 0;
       this.lastCommitSuccessTime = new Date();
@@ -325,8 +323,6 @@ class ScormWrapper {
       return;
     }
 
-    this.setSessionTime();
-    this.setExitState();
     this.finishCalled = true;
 
     if (this.timedCommitIntervalID !== null) {
@@ -340,6 +336,16 @@ class ScormWrapper {
 
     if (this.logOutputWin && !this.logOutputWin.closed) {
       this.logOutputWin.close();
+    }
+
+    this.endTime = new Date();
+
+    if (this.isSCORM2004()) {
+      this.scorm.set('cmi.session_time', this.convertToSCORM2004Time(this.endTime.getTime() - this.startTime.getTime()));
+      this.scorm.set('cmi.exit', this.getExitState());
+    } else {
+      this.scorm.set('cmi.core.session_time', this.convertToSCORM12Time(this.endTime.getTime() - this.startTime.getTime()));
+      this.scorm.set('cmi.core.exit', this.getExitState());
     }
 
     if (this._connection) {
@@ -359,7 +365,7 @@ class ScormWrapper {
     }));
   }
 
-  recordInteraction(id, response, correct, latency, type, correctResponsesPattern, objectiveIds, description) {
+  recordInteraction(id, response, correct, latency, type) {
     if (!this.isChildSupported('cmi.interactions.n.id') || !this.isSupported('cmi.interactions._count')) return;
     switch (type) {
       case 'choice':
@@ -416,7 +422,7 @@ class ScormWrapper {
     return value + '';
   }
 
-  setValue(property, value, { shouldCommit = this.commitOnAnyChange } = {}) {
+  setValue(property, value) {
     this.logger.debug(`ScormWrapper::setValue: _property=${property} _value=${value}`);
     if (this.finishCalled) {
       this.logger.debug('ScormWrapper::setValue: ignoring request as \'finish\' has been called');
@@ -427,6 +433,7 @@ class ScormWrapper {
       return;
     }
     const success = this.scorm.set(property, value);
+
     if (success) {
       // if success, test the connection as the API usually returns true regardless of the ability to persist the data
       this._connection?.testOnSetValue();
@@ -446,7 +453,7 @@ class ScormWrapper {
       }
       this.logger.warn('ScormWrapper::setValue: LMS reported that the \'set\' call failed but then said there was no error!');
     }
-    if (shouldCommit) this.debouncedCommit();
+    if (this.commitOnAnyChange) this.debouncedCommit();
     return success;
   }
 
@@ -590,7 +597,14 @@ class ScormWrapper {
           }
         });
     }
-    if (!this.suppressErrors && (!this.logOutputWin || this.logOutputWin.closed) && confirm(`${messages.title}:\n\n${message}\n\n${messages.pressOk}`)) {
+
+    // Disable "No Error" error message
+    let errorCode = null;
+    if (typeof error.data !== 'undefined' && typeof error.data.errorCode !== 'undefined') {
+      errorCode = error.data.errorCode;
+    }
+
+    if (errorCode !== 0 && !this.suppressErrors && (!this.logOutputWin || this.logOutputWin.closed) && confirm(`${messages.title}:\n\n${message}\n\n${messages.pressOk}`) && error.name !== '') {
       this.showDebugWindow();
     }
   }
@@ -600,16 +614,13 @@ class ScormWrapper {
       // range split into negative/positive ranges (rather than minScore-maxScore) depending on score
       const range = (score < 0) ? Math.abs(minScore) : maxScore;
       // `scaled` converted to -1-1 range to indicate negative/positive weighting now that negative values can be assigned to questions
-      const scaledScore = (range === 0)
-        ? 0
-        : score / range;
+      let scaledScore = score / range;
+      if (isNaN(scaledScore)) { scaledScore = 0; }
       this.setValue(`${cmiPrefix}.score.scaled`, parseFloat(scaledScore.toFixed(7)));
     } else if (isPercentageBased) {
       // convert values to 0-100 range
       // negative scores are capped to 0 due to SCORM 1.2 limitations
-      score = (score < 0 || maxScore === 0)
-        ? 0
-        : Math.round((score / maxScore) * 100);
+      score = (score < 0) ? 0 : Math.round((score / maxScore) * 100);
       minScore = 0;
       maxScore = 100;
     } else {
@@ -642,7 +653,7 @@ class ScormWrapper {
     this.setValueIfChildSupported(`${cmiPrefix}.time`, this.getCMITime());
   }
 
-  recordInteractionScorm2004(id, response, correct, latency, type, correctResponsesPattern, objectiveIds, description) {
+  recordInteractionScorm2004(id, response, correct, latency, type) {
     id = id.trim();
     const cmiPrefix = `cmi.interactions.${this.getInteractionCount()}`;
     this.setValue(`${cmiPrefix}.id`, id);
@@ -650,27 +661,10 @@ class ScormWrapper {
     this.setValue(`${cmiPrefix}.learner_response`, response);
     this.setValue(`${cmiPrefix}.result`, correct ? 'correct' : 'incorrect');
     if (latency !== null && latency !== undefined) this.setValue(`${cmiPrefix}.latency`, this.convertToSCORM2004Time(latency));
-    if (correctResponsesPattern?.length) {
-      correctResponsesPattern.forEach((response, index) => {
-        this.setValue(`${cmiPrefix}.correct_responses.${index}.pattern`, response);
-      });
-    }
-    if (objectiveIds?.length) {
-      objectiveIds.forEach((id, index) => {
-        this.setValue(`${cmiPrefix}.objectives.${index}.id`, id);
-      });
-    }
-    if (description) {
-      const maxLength = this.maxCharLimitOverride ?? 250;
-      // strip HTML
-      description = $(`<p>${description}</p>`).text();
-      if (description.length > maxLength) description = description.substr(0, maxLength).trim();
-      this.setValue(`${cmiPrefix}.description`, description);
-    }
     this.setValue(`${cmiPrefix}.timestamp`, this.getISO8601Timestamp());
   }
 
-  recordInteractionMultipleChoice(id, response, correct, latency, type, correctResponsesPattern, objectiveIds, description) {
+  recordInteractionMultipleChoice(id, response, correct, latency, type) {
     if (this.isSCORM2004()) {
       response = response.replace(/,|#/g, '[,]');
     } else {
@@ -678,10 +672,10 @@ class ScormWrapper {
       response = this.checkResponse(response, 'choice');
     }
     const scormRecordInteraction = this.isSCORM2004() ? this.recordInteractionScorm2004 : this.recordInteractionScorm12;
-    scormRecordInteraction.call(this, id, response, correct, latency, type, correctResponsesPattern, objectiveIds, description);
+    scormRecordInteraction.call(this, id, response, correct, latency, type);
   }
 
-  recordInteractionMatching(id, response, correct, latency, type, correctResponsesPattern, objectiveIds, description) {
+  recordInteractionMatching(id, response, correct, latency, type) {
     response = response.replace(/#/g, ',');
     if (this.isSCORM2004()) {
       response = response.replace(/,/g, '[,]').replace(/\./g, '[.]');
@@ -689,10 +683,10 @@ class ScormWrapper {
       response = this.checkResponse(response, 'matching');
     }
     const scormRecordInteraction = this.isSCORM2004() ? this.recordInteractionScorm2004 : this.recordInteractionScorm12;
-    scormRecordInteraction.call(this, id, response, correct, latency, type, correctResponsesPattern, objectiveIds, description);
+    scormRecordInteraction.call(this, id, response, correct, latency, type);
   }
 
-  recordInteractionFillIn(id, response, correct, latency, type, correctResponsesPattern, objectiveIds, description) {
+  recordInteractionFillIn(id, response, correct, latency, type) {
     let maxLength = this.isSCORM2004() ? 250 : 255;
     maxLength = this.maxCharLimitOverride ?? maxLength;
     if (response.length > maxLength) {
@@ -700,7 +694,7 @@ class ScormWrapper {
       this.logger.warn(`ScormWrapper::recordInteractionFillIn: response data for ${id} is longer than the maximum allowed length of ${maxLength} characters; data will be truncated to avoid an error.`);
     }
     const scormRecordInteraction = this.isSCORM2004() ? this.recordInteractionScorm2004 : this.recordInteractionScorm12;
-    scormRecordInteraction.call(this, id, response, correct, latency, type, correctResponsesPattern, objectiveIds, description);
+    scormRecordInteraction.call(this, id, response, correct, latency, type);
   }
 
   recordInteractionLongFillIn(id, response, correct, latency, type) {
@@ -712,34 +706,6 @@ class ScormWrapper {
     }
     const scormRecordInteraction = this.isSCORM2004() ? this.recordInteractionScorm2004 : this.recordInteractionScorm12;
     scormRecordInteraction.call(this, id, response, correct, latency, type);
-  }
-
-  /**
-   * Writes the aggregated course score to cmi.score and, for SCORM 2004,
-   * derives cmi.success_status by comparing the scaled score against
-   * cmi.scaled_passing_score.
-   * @param {number} score     Total raw score across all submitted components
-   * @param {number} minScore  Minimum possible score (default 0)
-   * @param {number} maxScore  Maximum possible score (default 0 = unscored course)
-   */
-  recordCourseScore(score, minScore = 0, maxScore = 0) {
-    this.setValue('cmi.score.raw', score);
-    this.setValue('cmi.score.min', minScore);
-    this.setValue('cmi.score.max', maxScore);
-    if (this.isSCORM2004()) {
-      const range = (score < 0) ? Math.abs(minScore) : maxScore;
-      let scaledScore = range === 0 ? 0 : score / range;
-      if (isNaN(scaledScore)) scaledScore = 0;
-      this.setValue('cmi.score.scaled', parseFloat(scaledScore.toFixed(7)));
-      let successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase;
-      const scaledPassingScore = parseFloat(this.getValue('cmi.scaled_passing_score'));
-      if (!isNaN(scaledPassingScore)) {
-        successStatus = scaledScore >= scaledPassingScore
-          ? SUCCESS_STATE.PASSED.asLowerCase
-          : SUCCESS_STATE.FAILED.asLowerCase;
-      }
-      this.setValue('cmi.success_status', successStatus);
-    }
   }
 
   getObjectiveCount() {
@@ -785,12 +751,43 @@ class ScormWrapper {
     this.recordScore(cmiPrefix, score, minScore, maxScore, isPercentageBased);
   }
 
-  recordObjectiveStatus(id, completionStatus, successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase) {
-    if (!this.isChildSupported('cmi.objectives.n.id') || !this.isSupported('cmi.objectives._count')) return;
-    if (!this.isSCORM2004() && completionStatus === COMPLETION_STATE.UNKNOWN.asLowerCase) {
-      // "unknown" is not a valid status in SCORM 1.2 - switch to "not attempted" to denote unavailable objectives
-      completionStatus = COMPLETION_STATE.NOTATTEMPTED.asLowerCase;
+  recordCourseScore(score, minScore = 0, maxScore = 0) {
+    this.setValue('cmi.score.raw', score);
+    this.setValue('cmi.score.min', minScore);
+    this.setValue('cmi.score.max', maxScore);
+
+    if (this.isSCORM2004()) {
+      const range = (score < 0) ? Math.abs(minScore) : maxScore;
+      let scaledScore = score / range;
+      if (isNaN(scaledScore)) { scaledScore = 0; }
+      scaledScore = parseFloat(scaledScore.toFixed(7));
+      this.setValue('cmi.score.scaled', scaledScore);
+
+      let successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase;
+      if (score === maxScore) {
+        successStatus = SUCCESS_STATE.PASSED.asLowerCase;
+      } else {
+        const assessmentConfig = Adapt.course.get('_assessment');
+        if (assessmentConfig) {
+          if (assessmentConfig._isPercentageBased) {
+            const courseScore = scaledScore > 0 ? scaledScore * 100 : 0;
+            successStatus = courseScore >= assessmentConfig._scoreToPass ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
+          } else {
+            successStatus = score >= assessmentConfig._scoreToPass ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
+          }
+        } else {
+          const scaledPassingScore = parseFloat(this.getValue('cmi.scaled_passing_score'));
+          if (!isNaN(scaledPassingScore)) {
+            successStatus = scaledScore >= scaledPassingScore ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
+          }
+        }
+      }
+      this.setValue('cmi.success_status', successStatus);
     }
+  }
+
+  recordObjectiveStatus(id, completionStatus, successStatus) {
+    if (!this.isChildSupported('cmi.objectives.n.id') || !this.isSupported('cmi.objectives._count')) return;
     if (!this.isValidCompletionStatus(completionStatus)) {
       this.handleDataError(new ScormError(CLIENT_STATUS_UNSUPPORTED, { completionStatus }));
       return;
@@ -1004,16 +1001,6 @@ class ScormWrapper {
     return response.join(',');
   }
 
-  setSessionTime() {
-    const options = { shouldCommit: false };
-    const endTime = new Date();
-    if (this.isSCORM2004()) {
-      this.setValue('cmi.session_time', this.convertToSCORM2004Time(endTime.getTime() - this.startTime.getTime()), options);
-      return;
-    }
-    this.setValue('cmi.core.session_time', this.convertToSCORM12Time(endTime.getTime() - this.startTime.getTime()), options);
-  }
-
   getExitState() {
     const completionStatus = this.scorm.data.completionStatus;
     const isIncomplete = completionStatus === COMPLETION_STATE.INCOMPLETE.asLowerCase || completionStatus === COMPLETION_STATE.UNKNOWN.asLowerCase;
@@ -1021,11 +1008,6 @@ class ScormWrapper {
     if (exitState !== 'auto') return exitState;
     if (this.isSCORM2004()) return (isIncomplete ? 'suspend' : 'normal');
     return '';
-  }
-
-  setExitState() {
-    const property = this.isSCORM2004() ? 'cmi.exit' : 'cmi.core.exit';
-    this.setValue(property, this.getExitState());
   }
 
 }
