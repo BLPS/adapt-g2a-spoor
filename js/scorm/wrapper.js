@@ -677,9 +677,7 @@ class ScormWrapper {
 
   recordInteractionMatching(id, response, correct, latency, type) {
     response = response.replace(/#/g, ',');
-    if (this.isSCORM2004()) {
-      response = response.replace(/,/g, '[,]').replace(/\./g, '[.]');
-    } else {
+    if (!this.isSCORM2004()) {
       response = this.checkResponse(response, 'matching');
     }
     const scormRecordInteraction = this.isSCORM2004() ? this.recordInteractionScorm2004 : this.recordInteractionScorm12;
