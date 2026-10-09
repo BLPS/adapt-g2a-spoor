@@ -445,12 +445,11 @@ export default class StatefulSession extends Backbone.Controller {
 
   loopCourseStructure(model) {
     if (typeof model.getChildren === 'undefined') { return null; }
-    // const loopElements = ['CourseModel', 'PageModel', 'ArticleModel', 'BlockModel'];
-    const loopElements = ['course', 'page', 'article', 'block'];
     let score = [];
     const children = model.getChildren();
     for (const childModel of children) {
-      if (loopElements.includes(childModel.get('_type'))) {
+      // recurse into every container (menu, page, article, block, ...); score components directly
+      if (!childModel.isTypeGroup('component')) {
         const loopScore = this.loopCourseStructure(childModel);
         if (loopScore !== null && loopScore.length > 0) {
           score = score.concat(loopScore);
