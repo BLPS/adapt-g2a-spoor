@@ -750,38 +750,45 @@ class ScormWrapper {
   }
 
   recordCourseScore(score, minScore = 0, maxScore = 0) {
+    if (!this.isSCORM2004()) {
+      // SCORM 1.2 has no cmi.score.* and limits cmi.core.score.* to 0-100, so record the total as a percentage
+      const percentage = (maxScore > 0 && score > 0) ? Math.round((score / maxScore) * 100) : 0;
+      this.setValue('cmi.core.score.raw', Math.min(percentage, 100));
+      this.setValueIfChildSupported('cmi.core.score.min', 0);
+      this.setValueIfChildSupported('cmi.core.score.max', 100);
+      return;
+    }
+
     this.setValue('cmi.score.raw', score);
     this.setValue('cmi.score.min', minScore);
     this.setValue('cmi.score.max', maxScore);
 
-    if (this.isSCORM2004()) {
-      const range = (score < 0) ? Math.abs(minScore) : maxScore;
-      let scaledScore = score / range;
-      if (isNaN(scaledScore)) { scaledScore = 0; }
-      scaledScore = parseFloat(scaledScore.toFixed(7));
-      this.setValue('cmi.score.scaled', scaledScore);
+    const range = (score < 0) ? Math.abs(minScore) : maxScore;
+    let scaledScore = score / range;
+    if (isNaN(scaledScore)) { scaledScore = 0; }
+    scaledScore = parseFloat(scaledScore.toFixed(7));
+    this.setValue('cmi.score.scaled', scaledScore);
 
-      let successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase;
-      if (score === maxScore) {
-        successStatus = SUCCESS_STATE.PASSED.asLowerCase;
-      } else {
-        const assessmentConfig = Adapt.course.get('_assessment');
-        if (assessmentConfig) {
-          if (assessmentConfig._isPercentageBased) {
-            const courseScore = scaledScore > 0 ? scaledScore * 100 : 0;
-            successStatus = courseScore >= assessmentConfig._scoreToPass ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
-          } else {
-            successStatus = score >= assessmentConfig._scoreToPass ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
-          }
+    let successStatus = SUCCESS_STATE.UNKNOWN.asLowerCase;
+    if (score === maxScore) {
+      successStatus = SUCCESS_STATE.PASSED.asLowerCase;
+    } else {
+      const assessmentConfig = Adapt.course.get('_assessment');
+      if (assessmentConfig) {
+        if (assessmentConfig._isPercentageBased) {
+          const courseScore = scaledScore > 0 ? scaledScore * 100 : 0;
+          successStatus = courseScore >= assessmentConfig._scoreToPass ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
         } else {
-          const scaledPassingScore = parseFloat(this.getValue('cmi.scaled_passing_score'));
-          if (!isNaN(scaledPassingScore)) {
-            successStatus = scaledScore >= scaledPassingScore ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
-          }
+          successStatus = score >= assessmentConfig._scoreToPass ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
+        }
+      } else {
+        const scaledPassingScore = parseFloat(this.getValue('cmi.scaled_passing_score'));
+        if (!isNaN(scaledPassingScore)) {
+          successStatus = scaledScore >= scaledPassingScore ? SUCCESS_STATE.PASSED.asLowerCase : SUCCESS_STATE.FAILED.asLowerCase;
         }
       }
-      this.setValue('cmi.success_status', successStatus);
     }
+    this.setValue('cmi.success_status', successStatus);
   }
 
   recordObjectiveStatus(id, completionStatus, successStatus) {
